@@ -1,0 +1,20 @@
+# Rust build artifacts
+/rust/target/
+
+# Solana keypairs - NEVER commit real keypairs!
+# member1.json is a template with zeros, safe to commit
+# If you add a real keypair, add it here:
+# my-keypair.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (if you ever add it back)
+node_modules/
