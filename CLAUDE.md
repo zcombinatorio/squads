@@ -78,6 +78,15 @@ cargo run --bin add-spending-limit -- <multisig_address> <amount> <period> [opti
 # Remove spending limit (config authority only)
 cargo run --bin remove-spending-limit -- <multisig_address> <spending_limit_address> [mainnet]
 
+# Inspect a specific spending limit
+cargo run --bin inspect-spending-limit -- <spending_limit_address> [mainnet]
+
+# List all spending limits for a multisig (requires dedicated RPC for mainnet)
+cargo run --bin inspect-spending-limit -- --multisig <multisig_address> [mainnet]
+
+# Use spending limit to transfer (authorized members only, no proposal needed!)
+cargo run --bin use-spending-limit -- <spending_limit_address> <destination> <amount> [mainnet]
+
 # Inspect existing multisig
 cargo run --bin inspect_multisig -- <multisig_address> [mainnet]
 
@@ -106,9 +115,26 @@ The config authority (member1) can instantly modify:
 - Add/remove spending limits
 - Transfer config authority
 
-**Important**: Config authority CANNOT move funds without threshold approval.
+**Important**: Config authority CANNOT move funds without threshold approval (unless using spending limits).
 
 Set `config_authority: None` in main.rs to make multisig fully autonomous.
+
+## Spending Limits (Bypass Proposals)
+
+Spending limits allow designated members to transfer funds **without creating proposals**:
+
+1. **Config authority creates a spending limit** with amount, period, authorized members, and optional destination whitelist
+2. **Authorized members can transfer directly** using `use-spending-limit` - no proposal/approval needed
+3. **Limits reset automatically** based on period (daily, weekly, monthly, or one-time)
+
+Example workflow:
+```bash
+# Config authority sets up a 1 SOL daily limit for member2
+cargo run --bin add-spending-limit -- <multisig> 1000000000 day --members <member2>
+
+# Member2 can now transfer up to 1 SOL/day without proposals
+cargo run --bin use-spending-limit -- <spending_limit_addr> <destination> 500000000
+```
 
 ## Costs
 
