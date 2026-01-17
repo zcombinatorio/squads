@@ -1,6 +1,7 @@
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use squads_multisig::anchor_lang::AccountDeserialize;
+use squads_multisig::pda::get_vault_pda;
 use squads_multisig::state::Multisig;
 use std::env;
 
@@ -33,6 +34,8 @@ fn main() {
             match Multisig::try_deserialize(&mut account.data.as_slice()) {
                 Ok(multisig) => {
                     println!("Multisig Address: {}", multisig_pda);
+                    let (vault_pda, _) = get_vault_pda(&multisig_pda, 0, None);
+                    println!("Vault Address: {} (send funds here!)", vault_pda);
                     println!("Threshold: {} of {}", multisig.threshold, multisig.members.len());
                     println!("Time Lock: {} seconds", multisig.time_lock);
 
