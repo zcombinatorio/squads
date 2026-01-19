@@ -29,7 +29,7 @@ use solana_sdk::{
     commitment_config::CommitmentConfig,
     instruction::{AccountMeta, Instruction},
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair, Signer},
+    signature::{read_keypair_file, Signer},
     system_program,
     transaction::Transaction,
 };
@@ -144,15 +144,19 @@ fn main() {
     // Members must be sorted for the spending limit invariant
     members.sort();
 
-    // Generate a unique create_key for this spending limit
-    let create_key = Keypair::new();
-    let (spending_limit_pda, _) = get_spending_limit_pda(&multisig_pda, &create_key.pubkey(), None);
+    // Derive a deterministic create_key from "combinator" label
+    // This allows us to always find the spending limit PDA for any multisig
+    let (create_key, _) = Pubkey::find_program_address(
+        &[b"combinator"],
+        &squads_multisig_program::ID,
+    );
+    let (spending_limit_pda, _) = get_spending_limit_pda(&multisig_pda, &create_key, None);
 
     println!("=== Add Spending Limit ({}) ===\n", network.to_uppercase());
     println!("Multisig: {}", multisig_pda);
     println!("Config Authority: {}", config_authority.pubkey());
     println!("Spending Limit PDA: {}", spending_limit_pda);
-    println!("Create Key: {}", create_key.pubkey());
+    println!("Create Key: {} (derived from 'combinator')", create_key);
     println!();
     println!("Spending Limit Configuration:");
     println!("  Amount: {} (in smallest units)", amount);
@@ -174,7 +178,7 @@ fn main() {
 
     let instruction_data = squads_multisig_program::instruction::MultisigAddSpendingLimit {
         args: squads_multisig_program::MultisigAddSpendingLimitArgs {
-            create_key: create_key.pubkey(),
+            create_key,
             vault_index,
             mint,
             amount,
@@ -220,7 +224,7 @@ fn main() {
             println!("\nSpending limit created successfully!");
             println!("Transaction: {}", sig);
             println!("\nSpending Limit Address: {}", spending_limit_pda);
-            println!("Create Key (save this!): {}", create_key.pubkey());
+            println!("Create Key: {} (derived from 'combinator' - no need to save)", create_key);
 
             let cluster_param = if network == "mainnet" { "" } else { "?cluster=devnet" };
             println!("\nView on Solana Explorer:");

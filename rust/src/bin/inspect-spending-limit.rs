@@ -4,7 +4,7 @@
 //!   # Inspect a specific spending limit by address
 //!   cargo run --bin inspect-spending-limit -- <spending_limit_address> [mainnet]
 //!
-//!   # List all spending limits for a multisig (requires --multisig flag)
+//!   # Derive and inspect spending limit for a multisig (uses 'combinator' create_key)
 //!   cargo run --bin inspect-spending-limit -- --multisig <multisig_address> [mainnet]
 //!
 //! Examples:
@@ -15,6 +15,7 @@
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{commitment_config::CommitmentConfig, pubkey::Pubkey};
 use squads_multisig::anchor_lang::AccountDeserialize;
+use squads_multisig::pda::get_spending_limit_pda;
 use squads_multisig::squads_multisig_program;
 use squads_multisig::state::SpendingLimit;
 use std::env;
@@ -22,9 +23,6 @@ use std::env;
 const DEVNET_RPC: &str = "https://api.devnet.solana.com";
 const MAINNET_RPC: &str = "https://api.mainnet-beta.solana.com";
 const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
-
-// SpendingLimit discriminator (first 8 bytes of sha256("account:SpendingLimit"))
-const SPENDING_LIMIT_DISCRIMINATOR: [u8; 8] = [0x0a, 0xc9, 0x1b, 0xa0, 0xda, 0xc3, 0xde, 0x98];
 
 fn format_period(period: &squads_multisig::state::Period) -> &'static str {
     match period {
@@ -133,98 +131,45 @@ fn inspect_single(client: &RpcClient, spending_limit_pda: Pubkey, network: &str)
 }
 
 fn inspect_multisig(client: &RpcClient, multisig_pda: Pubkey, network: &str) {
-    println!("=== Spending Limits for Multisig ({}) ===\n", network.to_uppercase());
+    println!("=== Spending Limit for Multisig ({}) ===\n", network.to_uppercase());
     println!("Multisig: {}", multisig_pda);
+
+    // Derive the spending limit PDA using the deterministic "combinator" create_key
+    let (create_key, _) = Pubkey::find_program_address(
+        &[b"combinator"],
+        &squads_multisig_program::ID,
+    );
+    let (spending_limit_pda, _) = get_spending_limit_pda(&multisig_pda, &create_key, None);
+
+    println!("Create Key: {} (derived from 'combinator')", create_key);
+    println!("Spending Limit PDA: {}", spending_limit_pda);
     println!();
-    println!("Querying all program accounts (this may take a moment)...");
-    println!("Note: Public RPCs may reject this query. Use a dedicated RPC or");
-    println!("      inspect specific spending limits by address instead.");
-    println!();
 
-    match client.get_program_accounts(&squads_multisig_program::ID) {
-        Ok(all_accounts) => {
-            // Filter client-side: find SpendingLimit accounts for this multisig
-            let accounts: Vec<_> = all_accounts
-                .into_iter()
-                .filter(|(_, account)| {
-                    // Check discriminator first (fast rejection)
-                    if account.data.len() < 8 {
-                        return false;
-                    }
-                    if &account.data[0..8] != SPENDING_LIMIT_DISCRIMINATOR {
-                        return false;
-                    }
-                    // Then deserialize and check multisig
-                    if let Ok(limit) = SpendingLimit::try_deserialize(&mut account.data.as_slice()) {
-                        limit.multisig == multisig_pda
-                    } else {
-                        false
-                    }
-                })
-                .collect();
-
-            if accounts.is_empty() {
-                println!("No spending limits found for this multisig.");
-                return;
-            }
-
-            println!("Found {} spending limit(s):\n", accounts.len());
-            println!("{}", "=".repeat(80));
-
-            for (i, (pubkey, account)) in accounts.iter().enumerate() {
-                match SpendingLimit::try_deserialize(&mut account.data.as_slice()) {
-                    Ok(limit) => {
-                        print_spending_limit(pubkey, &limit, Some(i), network);
-                        println!("{}", "-".repeat(80));
-                    }
-                    Err(e) => {
-                        println!("\n[Spending Limit #{}]", i + 1);
-                        println!("Address: {}", pubkey);
-                        println!("Error: Failed to deserialize: {}", e);
-                        println!("{}", "-".repeat(80));
-                    }
+    match client.get_account(&spending_limit_pda) {
+        Ok(account) => {
+            match SpendingLimit::try_deserialize(&mut account.data.as_slice()) {
+                Ok(limit) => {
+                    print_spending_limit(&spending_limit_pda, &limit, None, network);
                 }
-            }
-
-            // Summary
-            println!("\n=== Summary ===");
-            println!("Total spending limits: {}", accounts.len());
-
-            let mut sol_total: u64 = 0;
-            let mut sol_remaining: u64 = 0;
-            let mut token_count = 0;
-
-            for (_, account) in &accounts {
-                if let Ok(limit) = SpendingLimit::try_deserialize(&mut account.data.as_slice()) {
-                    if limit.mint == Pubkey::default() {
-                        sol_total += limit.amount;
-                        sol_remaining += limit.remaining_amount;
-                    } else {
-                        token_count += 1;
-                    }
+                Err(e) => {
+                    println!("Error: Failed to deserialize spending limit account");
+                    println!("Details: {}", e);
+                    println!();
+                    println!("This may not be a valid Squads spending limit account.");
                 }
-            }
-
-            if sol_total > 0 {
-                println!(
-                    "Total SOL limits: {:.9} SOL ({:.9} SOL remaining)",
-                    sol_total as f64 / LAMPORTS_PER_SOL,
-                    sol_remaining as f64 / LAMPORTS_PER_SOL
-                );
-            }
-            if token_count > 0 {
-                println!("SPL Token limits: {}", token_count);
             }
         }
         Err(e) => {
-            println!("Error: Failed to query spending limits");
-            println!("Details: {}", e);
+            println!("No spending limit found for this multisig.");
             println!();
-            println!("The public RPC rejected the query (too many accounts).");
-            println!("Options:");
-            println!("  1. Use a dedicated RPC endpoint (Helius, QuickNode, etc.)");
-            println!("  2. Inspect specific spending limits by address:");
-            println!("     cargo run --bin inspect-spending-limit -- <spending_limit_address> [mainnet]");
+            println!("The spending limit PDA does not exist, which means either:");
+            println!("  1. No spending limit has been created for this multisig yet");
+            println!("  2. The spending limit was created with a different create_key");
+            println!();
+            println!("To create a spending limit:");
+            println!("  cargo run --bin add-spending-limit -- {} <amount> <period> [mainnet]", multisig_pda);
+            println!();
+            println!("RPC error: {}", e);
         }
     }
 }

@@ -2,9 +2,12 @@
 /rust/target/
 
 # Solana keypairs - NEVER commit real keypairs!
-# member1.json is a template with zeros, safe to commit
-# If you add a real keypair, add it here:
-# my-keypair.json
+member1.json
+*.json.bak
+
+# Environment files with secrets
+.env
+.env.local
 
 # IDE
 .idea/
