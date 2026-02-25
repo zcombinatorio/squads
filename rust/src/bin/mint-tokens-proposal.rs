@@ -1,11 +1,14 @@
 //! Create a proposal to mint tokens from a mint the multisig controls
 //!
 //! Usage:
-//!   cargo run --bin mint-tokens-proposal -- <multisig_address> <mint> <destination> <amount> [mainnet]
+//!   cargo run --bin mint-tokens-proposal -- <multisig_address> <mint> <destination_wallet> <amount> [mainnet]
 //!
 //! Example:
 //!   # Mint 10,000 tokens (with 9 decimals = 10000 * 10^9 = 10_000_000_000_000)
-//!   cargo run --bin mint-tokens-proposal -- BJbRt... E7xkt... DestATA... 10000000000000 mainnet
+//!   cargo run --bin mint-tokens-proposal -- BJbRt... E7xkt... DestWallet... 10000000000000 mainnet
+//!
+//! This script now derives the destination ATA from <destination_wallet> and adds an
+//! idempotent ATA creation instruction before minting, so the ATA can be absent.
 
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -15,6 +18,9 @@ use solana_sdk::{
     signature::{read_keypair_file, Signer},
     system_program,
     transaction::Transaction,
+};
+use spl_associated_token_account::{
+    get_associated_token_address, instruction::create_associated_token_account_idempotent,
 };
 use spl_token::instruction::mint_to;
 use squads_multisig::anchor_lang::{AccountDeserialize, AnchorSerialize, InstructionData, ToAccountMetas};
@@ -35,22 +41,22 @@ fn main() {
         println!("Create a proposal to mint tokens from a mint the multisig controls");
         println!();
         println!("Usage:");
-        println!("  cargo run --bin mint-tokens-proposal -- <multisig_address> <mint> <destination> <amount> [mainnet]");
+        println!("  cargo run --bin mint-tokens-proposal -- <multisig_address> <mint> <destination_wallet> <amount> [mainnet]");
         println!();
         println!("Arguments:");
-        println!("  multisig_address  - The multisig PDA");
-        println!("  mint              - The token mint address");
-        println!("  destination       - Destination token account (ATA or regular token account)");
-        println!("  amount            - Amount in smallest units (e.g., for 9 decimals: 10000 tokens = 10000000000000)");
+        println!("  multisig_address   - The multisig PDA");
+        println!("  mint               - The token mint address");
+        println!("  destination_wallet - Recipient wallet pubkey (ATA will be derived/created idempotently)");
+        println!("  amount             - Amount in smallest units (e.g., for 9 decimals: 10000 tokens = 10000000000000)");
         println!();
         println!("Example:");
-        println!("  cargo run --bin mint-tokens-proposal -- BJbRt... E7xkt... DestATA... 10000000000000 mainnet");
+        println!("  cargo run --bin mint-tokens-proposal -- BJbRt... E7xkt... DestWallet... 10000000000000 mainnet");
         return;
     }
 
     let multisig_pda: Pubkey = args[1].parse().expect("Invalid multisig address");
     let mint: Pubkey = args[2].parse().expect("Invalid mint address");
-    let destination: Pubkey = args[3].parse().expect("Invalid destination address");
+    let destination_wallet: Pubkey = args[3].parse().expect("Invalid destination wallet address");
     let amount: u64 = args[4].parse().expect("Invalid amount");
     let network = args.get(5).map(|s| s.as_str()).unwrap_or("devnet");
 
@@ -77,31 +83,44 @@ fn main() {
     let (transaction_pda, _) = get_transaction_pda(&multisig_pda, new_transaction_index, None);
     let (proposal_pda, _) = get_proposal_pda(&multisig_pda, new_transaction_index, None);
 
+    let destination_ata = get_associated_token_address(&destination_wallet, &mint);
+
     println!("=== Create Mint Tokens Proposal ({}) ===\n", network.to_uppercase());
     println!("Multisig: {}", multisig_pda);
-    println!("Vault (mint authority): {}", vault_pda);
+    println!("Vault (mint authority / tx payer on execute): {}", vault_pda);
     println!("Creator: {}", creator.pubkey());
     println!("Threshold: {} of {}", multisig.threshold, multisig.members.len());
     println!();
     println!("Mint: {}", mint);
-    println!("Destination: {}", destination);
+    println!("Destination Wallet: {}", destination_wallet);
+    println!("Destination ATA: {}", destination_ata);
     println!("Amount: {} (smallest units)", amount);
     println!();
     println!("Transaction Index: {}", new_transaction_index);
+    println!("Note: ATA creation is included and idempotent.");
+    println!("Note: Vault must have enough SOL to pay ATA rent if missing.");
 
-    // Create the mint_to instruction
-    // The vault PDA is the mint authority, so it signs via CPI
+    // Create ATA idempotently (payer is the vault during proposal execution)
+    let create_ata_ix = create_associated_token_account_idempotent(
+        &vault_pda,
+        &destination_wallet,
+        &mint,
+        &spl_token::ID,
+    );
+
+    // Create the mint_to instruction. The vault PDA is the mint authority and signs via Squads CPI.
     let mint_ix = mint_to(
         &spl_token::ID,
         &mint,
-        &destination,
-        &vault_pda,  // mint authority (vault)
-        &[],         // no additional signers (vault signs via CPI)
+        &destination_ata,
+        &vault_pda,
+        &[],
         amount,
-    ).expect("Failed to create mint_to instruction");
+    )
+    .expect("Failed to create mint_to instruction");
 
     // Compile the transaction message
-    let transaction_message = TransactionMessage::try_compile(&vault_pda, &[mint_ix], &[])
+    let transaction_message = TransactionMessage::try_compile(&vault_pda, &[create_ata_ix, mint_ix], &[])
         .expect("Failed to compile transaction message");
 
     let message_bytes = transaction_message
@@ -192,12 +211,20 @@ fn main() {
             println!("Status: Active (awaiting {} more approval(s))", multisig.threshold - 1);
             println!();
             println!("Share this with other members to approve:");
-            println!("  cargo run --bin approve-proposal -- {} {} {}",
-                     multisig_pda, new_transaction_index, if network == "mainnet" { "mainnet" } else { "" });
+            println!(
+                "  cargo run --bin approve-proposal -- {} {} {}",
+                multisig_pda,
+                new_transaction_index,
+                if network == "mainnet" { "mainnet" } else { "" }
+            );
             println!();
             println!("After threshold is met, execute with:");
-            println!("  cargo run --bin execute-proposal -- {} {} {}",
-                     multisig_pda, new_transaction_index, if network == "mainnet" { "mainnet" } else { "" });
+            println!(
+                "  cargo run --bin execute-proposal -- {} {} {}",
+                multisig_pda,
+                new_transaction_index,
+                if network == "mainnet" { "mainnet" } else { "" }
+            );
 
             let cluster_param = if network == "mainnet" { "" } else { "?cluster=devnet" };
             println!("\nView on Solana Explorer:");
