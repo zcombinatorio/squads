@@ -4432,6 +4432,7 @@ version = "0.1.0"
 dependencies = [
  "solana-client",
  "solana-sdk",
+ "solana-transaction-status",
  "spl-associated-token-account",
  "spl-token",
  "squads-multisig",
